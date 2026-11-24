@@ -26,6 +26,7 @@ const fail = (status, error) => json({ error }, status);
 
 const vehicles = () => getStore({ name: "vehicles", consistency: "strong" });
 const images = () => getStore({ name: "images", consistency: "strong" });
+const finance = () => getStore({ name: "finance", consistency: "strong" });
 const security = () => getStore({ name: "security", consistency: "strong" });
 const leads = () => getStore({ name: "leads", consistency: "strong" });
 
@@ -96,6 +97,55 @@ const sortVehicles = (a, b) =>
   (RANK[a.estado] ?? 0) - (RANK[b.estado] ?? 0) ||
   (b.destacado ? 1 : 0) - (a.destacado ? 1 : 0) ||
   (b.createdAt || 0) - (a.createdAt || 0);
+
+
+/* ---------- finanzas ---------- */
+const money = (v) => {
+  const t = String(v ?? "").replace(/\s/g, "").replace(/\.(?=\d{3}(\D|$))/g, "").replace(",", ".").replace(/[^\d.]/g, "");
+  const n = Number(t);
+  return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : 0;
+};
+const validDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || "") && !Number.isNaN(Date.parse(s));
+const TIPOS_MOV = ["ingreso", "gasto"];
+async function vehName(id, fallback = "") {
+  if (!id) return "";
+  const v = await vehicles().get(id, { type: "json" });
+  return v ? `${v.marca} ${v.modelo}${v.anio ? " " + v.anio : ""}`.trim() : fallback;
+}
+async function cleanMov(input, base = {}) {
+  const m = { ...base };
+  if ("tipo" in input) m.tipo = TIPOS_MOV.includes(input.tipo) ? input.tipo : "gasto";
+  if ("fecha" in input) m.fecha = validDate(input.fecha) ? input.fecha : "";
+  if ("categoria" in input) m.categoria = str(input.categoria, 60);
+  if ("concepto" in input) m.concepto = str(input.concepto, 120);
+  if ("importe" in input) m.importe = money(input.importe);
+  if ("nota" in input) m.nota = str(input.nota, 300);
+  if ("vehiculoId" in input) {
+    m.vehiculoId = validId(input.vehiculoId) ? input.vehiculoId : "";
+    m.vehiculoNombre = await vehName(m.vehiculoId, base.vehiculoNombre || "");
+  }
+  return m;
+}
+function cleanFijo(input, base = {}) {
+  const f = { ...base };
+  if ("tipo" in input) f.tipo = TIPOS_MOV.includes(input.tipo) ? input.tipo : "gasto";
+  if ("categoria" in input) f.categoria = str(input.categoria, 60);
+  if ("concepto" in input) f.concepto = str(input.concepto, 120);
+  if ("importe" in input) f.importe = money(input.importe);
+  if ("frecuencia" in input) f.frecuencia = input.frecuencia === "anual" ? "anual" : "mensual";
+  if ("desde" in input) f.desde = validDate(input.desde) ? input.desde : "";
+  if ("hasta" in input) f.hasta = validDate(input.hasta) ? input.hasta : "";
+  return f;
+}
+async function readFinance() {
+  const st = finance();
+  const { blobs } = await st.list();
+  const items = await Promise.all(blobs.map(async (b) => ({ k: b.key, v: await st.get(b.key, { type: "json" }) })));
+  return {
+    movs: items.filter((i) => i.k.startsWith("mov-") && i.v).map((i) => i.v).sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "") || (b.createdAt || 0) - (a.createdAt || 0)),
+    fijos: items.filter((i) => i.k.startsWith("fijo-") && i.v).map((i) => i.v).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)),
+  };
+}
 
 async function readBody(req) {
   try { return await req.json(); } catch (_) { return null; }
@@ -216,6 +266,43 @@ export default async (req) => {
       if (parts[1] === "images" && validId(parts[2]) && method === "DELETE") {
         await images().delete(parts[2]);
         return json({ ok: true });
+      }
+
+      if (parts[1] === "finance" && !parts[2] && method === "GET") return json(await readFinance());
+
+      if ((parts[1] === "movs" || parts[1] === "fijos")) {
+        const isMov = parts[1] === "movs";
+        const prefix = isMov ? "mov-" : "fijo-";
+        const id = parts[2];
+        const st = finance();
+        if (!id && method === "POST") {
+          const b = await readBody(req);
+          if (!b) return fail(400, "datos no válidos");
+          const now = Date.now();
+          const base = { id: newId(), createdAt: now, updatedAt: now };
+          const o = isMov ? await cleanMov({ tipo: "gasto", vehiculoId: "", ...b }, base) : cleanFijo({ tipo: "gasto", frecuencia: "mensual", ...b }, base);
+          if (!(o.importe > 0)) return fail(400, "Falta el importe");
+          if (!o.categoria) return fail(400, "Falta la categoría");
+          if (isMov && !o.fecha) return fail(400, "Falta la fecha");
+          if (!isMov && !o.desde) return fail(400, "Falta la fecha de inicio");
+          await st.setJSON(prefix + o.id, o);
+          return json(o, 201);
+        }
+        if (id && validId(id) && method === "PUT") {
+          const old = await st.get(prefix + id, { type: "json" });
+          if (!old) return fail(404, "no existe");
+          const b = await readBody(req);
+          if (!b) return fail(400, "datos no válidos");
+          const o = isMov ? await cleanMov(b, old) : cleanFijo(b, old);
+          if (!(o.importe > 0)) return fail(400, "Falta el importe");
+          o.updatedAt = Date.now();
+          await st.setJSON(prefix + id, o);
+          return json(o);
+        }
+        if (id && validId(id) && method === "DELETE") {
+          await st.delete(prefix + id);
+          return json({ ok: true });
+        }
       }
 
       if (parts[1] === "leads") {

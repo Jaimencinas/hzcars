@@ -51,3 +51,12 @@ En `public/index.html` busca y sustituye:
 - API: `netlify/functions/api.mjs`. La sesión del panel dura 30 días. Tras 8 contraseñas erróneas seguidas, el acceso se bloquea 15 minutos.
 - Vista de prueba sin servidor: abrir `public/index.html?demo` muestra coches de ejemplo.
 - Si el panel dice «Falta configurar ADMIN_PASSWORD», revisa el paso 3 y vuelve a desplegar.
+
+## Finanzas (Admin → pestaña "Finanzas")
+- Movimientos de ingreso/gasto con fecha, categoría e importe, asociados o no a un vehículo.
+- Filtros de tiempo (mes, trimestre, año, últimos 12 meses, personalizado) con comparación frente al periodo anterior.
+- "Por vehículo": compra, gastos, coste total, venta, beneficio, margen y días en stock.
+- "Costes fijos": se repiten solos cada mes o año (alquiler, seguros, autónomos…).
+- Resumen con gráficas, reparto de cada 100 €, punto de equilibrio y capital parado en stock.
+- Al marcar un coche como Vendido, el panel propone registrar el ingreso de la venta.
+- Exportación a CSV. Los importes son los introducidos: no se calcula IVA ni REBU.
