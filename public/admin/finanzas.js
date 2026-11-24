@@ -119,7 +119,7 @@ function renderFin() {
   const custom = S.rk === 'custom' ? `<div class="g2 cust"><div><label class="f">Desde</label><input type="date" id="rf" value="${R.from}"></div><div><label class="f">Hasta</label><input type="date" id="rt" value="${R.to}"></div></div>` : '';
   let body = '';
   if (S.fv === 'resumen') body = finResumen(R); else if (S.fv === 'movs') body = finMovs(R); else if (S.fv === 'veh') body = finVeh(R); else body = finFijos();
-  return `<div class="finbar"><div class="chips">${chips}</div><button class="btn sm" id="newmov">+ Añadir movimiento</button></div>${custom}
+  return `<div class="finbar"><div class="chips">${chips}</div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm" id="newop">+ Operación de coche</button><button class="btn sm ghost" id="newmov">+ Movimiento suelto</button></div></div>${custom}
   <div class="rangeinfo">${fdate(R.from)} → ${fdate(R.to)}</div>
   <div class="subtabs">${subs}</div>${body}`;
 }
@@ -129,6 +129,7 @@ function finAfter() {
   m.querySelectorAll('[data-fv]').forEach(b => b.onclick = () => { S.fv = b.dataset.fv; render(); });
   if ($('rf')) { $('rf').onchange = () => { S.rf = $('rf').value; render(); }; $('rt').onchange = () => { S.rt = $('rt').value; render(); }; }
   $('newmov').onclick = () => openMov({});
+  $('newop').onclick = () => openOp();
   if (S.fv === 'resumen') drawCharts();
   if (S.fv === 'movs') bindMovs();
   if (S.fv === 'veh') m.querySelectorAll('[data-vm]').forEach(b => b.onclick = () => { S.vm = b.dataset.vm; render(); });
@@ -373,4 +374,38 @@ function askSale(id) {
   const v = S.vehicles.find(x => x.id === id); if (!v) return;
   if (S.fin.movs.some(x => x.vehiculoId === id && x.categoria === VENTA)) return;
   openMov({ pre: { tipo: 'ingreso', vehiculoId: id, categoria: VENTA, importe: v.precio, fecha: ymd(new Date()), concepto: `Venta ${v.marca} ${v.modelo}` }, title: 'Registrar la venta', skip: true });
+}
+
+/* operación de coche: vehículo + nombre de la operación + coste de piezas/arreglos + importe de venta, todo en una sola pantalla */
+function openOp(pre = {}) {
+  const vl = S.vehicles.slice().sort((a, b) => (a.marca + a.modelo).localeCompare(b.marca + b.modelo));
+  fsheet(`<div class="sh-h"><h2>Operación de coche</h2><button class="x" id="fx" aria-label="Cerrar">✕</button></div>
+  <form class="sh-b" id="of" autocomplete="off">
+    <div><label class="f">Vehículo *</label><select id="oveh" required><option value="">— Elige el coche —</option>${vl.map(v => `<option value="${v.id}" ${v.id === pre.vehiculoId ? 'selected' : ''}>${esc(v.marca)} ${esc(v.modelo)}${v.anio ? ' ' + v.anio : ''}${v.estado === 'vendido' ? ' (vendido)' : ''}</option>`).join('')}</select></div>
+    <div><label class="f">¿Qué operación es? *</label><input id="ocon" required maxlength="120" placeholder="Ej. Cambio de embrague y venta a Juan" value="${esc(pre.concepto || '')}"></div>
+    <div><label class="f">Fecha *</label><input type="date" id="ofec" required value="${ymd(new Date())}"></div>
+    <div class="hint" style="margin:0 4px">Rellena solo lo que tenga importe; lo demás déjalo vacío.</div>
+    <div class="g2"><div><label class="f">Compra del coche (€)</label><input id="ocom" inputmode="decimal" placeholder="0,00"></div><div><label class="f">Piezas y arreglos (€)</label><input id="opie" inputmode="decimal" placeholder="0,00"></div></div>
+    <div class="g2"><div><label class="f">Otros gastos (€)</label><input id="ootr" inputmode="decimal" placeholder="ITV, gestoría…"></div><div><label class="f">Importe de venta (€)</label><input id="oven" inputmode="decimal" placeholder="Lo que cobras"></div></div>
+    <div><label class="f">Nota (opcional)</label><input id="onot" maxlength="300"></div>
+    <div class="tot" id="ores" style="margin:0 4px"></div>
+  </form><div class="sh-f"><button class="btn ghost" id="ocan" type="button">Cancelar</button><button class="btn" id="osave" type="button">Guardar operación</button></div>`);
+  const n = id => { const t = $(id).value.replace(/[\s.]/g, '').replace(',', '.'); return parseFloat(t) || 0; };
+  const calc = () => { const g = n('ocom') + n('opie') + n('ootr'), v = n('oven'); $('ores').innerHTML = (g || v) ? `<span>Gastos <b class="neg">${eur2(g)}</b></span><span>Venta <b class="pos">${eur2(v)}</b></span><span>Resultado <b class="${v - g >= 0 ? 'pos' : 'neg'}">${eur2(v - g)}</b></span>` : ''; };
+  ['ocom', 'opie', 'ootr', 'oven'].forEach(i => $(i).oninput = calc);
+  $('fx').onclick = $('ocan').onclick = fclose;
+  $('osave').onclick = async () => {
+    if (!$('of').reportValidity()) return;
+    const base = { vehiculoId: $('oveh').value, fecha: $('ofec').value, concepto: $('ocon').value, nota: $('onot').value };
+    const items = [['gasto', 'Compra del vehículo', 'ocom'], ['gasto', 'Reparación / taller', 'opie'], ['gasto', 'Otros del vehículo', 'ootr'], ['ingreso', 'Venta de vehículo', 'oven']].filter(x => n(x[2]) > 0);
+    if (!items.length) return toast('Pon al menos un importe', 1);
+    $('osave').disabled = true; $('osave').textContent = 'Guardando…';
+    try {
+      for (const [tipo, categoria, id] of items) {
+        const o = await api('admin/movs', { method: 'POST', json: { ...base, tipo, categoria, importe: String(n(id)) } });
+        S.fin.movs = [o, ...S.fin.movs];
+      }
+      fclose(); render(); toast('Operación guardada');
+    } catch (e) { toast(e.message, 1); $('osave').disabled = false; $('osave').textContent = 'Guardar operación'; }
+  };
 }
